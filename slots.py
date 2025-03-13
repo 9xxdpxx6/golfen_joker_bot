@@ -35,17 +35,23 @@ WINNING_COMBINATIONS = {
 
 # Функция для интерпретации результата для слотов
 def interpret_slot_result(result):
+    # Log the full result
+    logger.info(f"Full slot result: {result}")
+
     # Разделяем значение на три 2-битных поля
     left_slot = (result - 1) & 3  # Первые 2 бита
     center_slot = ((result - 1) >> 2) & 3  # Следующие 2 бита
     right_slot = ((result - 1) >> 4) & 3  # Последние 2 бита
-    
+
+    # Log the individual slot values
+    logger.info(f"Slot values - Left: {left_slot}, Center: {center_slot}, Right: {right_slot}")
+
     # Формируем комбинацию
     combination = (left_slot, center_slot, right_slot)
-    
+
     # Проверяем, является ли комбинация выигрышной
     if combination in WINNING_COMBINATIONS:
         winning_symbol, multiplier = WINNING_COMBINATIONS[combination]
-        return f"🎰 Выпало: {winning_symbol} 🎉 Вы выиграли x{multiplier}!"
+        return f"🎰 Выпало: {winning_symbol} 🎉 Вы выиграли x{multiplier}!", multiplier
     else:
-        return "🎰 Не повезло. Попробуйте еще раз!"
+        return "❌ Не повезло. Попробуйте еще раз!"

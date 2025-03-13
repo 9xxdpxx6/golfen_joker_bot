@@ -7,7 +7,6 @@ from telegram.ext import (
 )
 
 from config import logger
-from slots import interpret_slot_result
 from database import init_db, update_player, reset_stats, get_stats
 
 # Словарь с временем ожидания для каждой анимации
@@ -26,9 +25,14 @@ POINTS = {
     "basketball": 15,
     "football": 15,
     "bowling": 25,
-    "slot": {64: 50, 8: 40, 16: 30, 32: 20}  # Очки за слоты
+    "slot": {
+        1: ("🍫🍫🍫", 2),  # Х2
+        43: ("🍋🍋🍋", 3),  # Х3
+        22: ("🍒🍒🍒", 4),  # Х4
+        64: ("7⃣7⃣7⃣", 7)   # Х7
+    }
 }
-
+    
 # Функция для старта бота
 async def start(update: Update, context):
     logger.info("Команда /start получена")
@@ -44,6 +48,7 @@ async def start(update: Update, context):
     await update.message.reply_text("Выбери игру:", reply_markup=reply_markup)
 
 # Обработчик выбора игры через кнопки или команды
+# Обработчик выбора игры через кнопки или команды
 async def handle_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_type: str):
     chat_id = update.message.chat_id if update.message else update.callback_query.message.chat_id
     query = update.callback_query if update.callback_query else None
@@ -53,8 +58,12 @@ async def handle_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_t
     if query:
         await query.answer()
         logger.info(f"Выбрана игра через кнопку: {game_type}")
+        # Получаем message_id из callback_query
+        reply_to_message_id = query.message.message_id
     else:
         logger.info(f"Выбрана игра через команду: {game_type}")
+        # Получаем message_id из update.message
+        reply_to_message_id = update.message.message_id
 
     # Определяем тип анимированного эмодзи
     emoji_type = {
@@ -68,12 +77,13 @@ async def handle_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_t
 
     # Логируем отправку анимированного эмодзи
     logger.info(f"Отправка анимированного эмодзи: {emoji_type}")
-    
-    # Отправляем анимированный эмодзи
+
+    # Отправляем анимированный эмодзи в ответ на исходное сообщение
     dice_message = await context.bot.send_dice(
         chat_id=chat_id,
         emoji=emoji_type,
-        allow_sending_without_reply=True  # Обход flood control
+        allow_sending_without_reply=True,  # Обход flood control
+        reply_to_message_id=reply_to_message_id  # Ответ на исходное сообщение
     )
 
     # Определяем время ожидания для текущей анимации
@@ -91,7 +101,8 @@ async def handle_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_t
         second_dice_message = await context.bot.send_dice(
             chat_id=chat_id,
             emoji=emoji_type,
-            allow_sending_without_reply=True  # Обход flood control
+            allow_sending_without_reply=True,  # Обход flood control
+            reply_to_message_id=reply_to_message_id  # Ответ на исходное сообщение
         )
 
         # Ждём завершение анимации второго кубика
@@ -124,23 +135,31 @@ async def handle_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_t
             interpreted_result = "🎳 Страйк! 🎉 Все кегли сбиты!" if result_1 == 6 else "❌ Неудача. Попробуйте еще раз."
             points = POINTS[game_type] if result_1 == 6 else 0
         elif game_type == "slot":
-            slot_result = interpret_slot_result(result_1)
-            interpreted_result = slot_result
-            points = POINTS[game_type].get(result_1, 0)
+            slot_result = POINTS[game_type].get(result_1)
+            if slot_result:
+                winning_symbol, multiplier = slot_result
+                interpreted_result = f"🎰 Выпало: {winning_symbol} 🎉 Вы выиграли x{multiplier}!"
+                points = multiplier * 10  # Assuming 10 points base for slots
+            else:
+                interpreted_result = "❌ Вы проиграли."
+                points = 0
         else:
             interpreted_result = f"Результат: {result_1}"
 
     # Отправляем сообщение с результатом
     if query:
-        await query.edit_message_text(
-            text=f"Вы выбрали игру {game_type.capitalize()}.\n{interpreted_result}"
-        )
+        message_text = f"Вы выбрали игру {game_type.capitalize()}.\n{interpreted_result}"
+        if points > 0:  # Добавляем очки только при выигрыше
+            message_text += f"\n🎯 Начислено очков: {points}"
+        await query.edit_message_text(text=message_text)
     else:
-        await update.message.reply_text(
-            text=f"Вы выбрали игру {game_type.capitalize()}.\n{interpreted_result}"
-        )
+        message_text = f"Вы выбрали игру {game_type.capitalize()}.\n{interpreted_result}"
+        if points > 0:  # Добавляем очки только при выигрыше
+            message_text += f" Начислено очков: {points}"
+        await update.message.reply_text(text=message_text)
 
-    update_player(user_id, username, points)
+    # Обновляем статистику игрока
+    update_player(user_id, username, points, chat_id)
 
 # Обработчики команд
 async def dart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -169,28 +188,32 @@ async def game_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команды для статистики
 async def stats_all(update: Update, context):
-    stats = get_stats('all')
+    chat_id = update.message.chat_id
+    stats = get_stats('all', chat_id)
     message = "🏆 Статистика за всё время:\n"
     for idx, (username, points) in enumerate(stats, start=1):
         message += f"{idx}. @{username}: {points} очков\n"
     await update.message.reply_text(message)
 
 async def stats_month(update: Update, context):
-    stats = get_stats('month')
+    chat_id = update.message.chat_id
+    stats = get_stats('month', chat_id)
     message = "📅(30) Статистика за месяц:\n"
     for idx, (username, points) in enumerate(stats, start=1):
         message += f"{idx}. @{username}: {points} очков\n"
     await update.message.reply_text(message)
 
 async def stats_week(update: Update, context):
-    stats = get_stats('week')
+    chat_id = update.message.chat_id
+    stats = get_stats('week', chat_id)
     message = "📅(7) Статистика за неделю:\n"
     for idx, (username, points) in enumerate(stats, start=1):
         message += f"{idx}. @{username}: {points} очков\n"
     await update.message.reply_text(message)
 
 async def stats_day(update: Update, context):
-    stats = get_stats('day')
+    chat_id = update.message.chat_id
+    stats = get_stats('day', chat_id)
     message = "📅(1) Статистика за день:\n"
     for idx, (username, points) in enumerate(stats, start=1):
         message += f"{idx}. @{username}: {points} очков\n"
