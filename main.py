@@ -18,6 +18,10 @@ from handlers import (
     stats_month,
     stats_week,
     stats_day,
+    stats_hour,
+    claim_tokens_command,
+    cookie_command,
+    cookie_button,
 )
 from config import read_token_from_file
 from telegram import Update
@@ -34,7 +38,7 @@ def main():
 
     application = ApplicationBuilder().token(token).build()
 
-    # Регистрация обработчиков команд
+    # Регистрация обработчиков в правильном порядке
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dart", dart_command))
     application.add_handler(CommandHandler("dice", dice_command))
@@ -46,9 +50,14 @@ def main():
     application.add_handler(CommandHandler("stats_month", stats_month))
     application.add_handler(CommandHandler("stats_week", stats_week))
     application.add_handler(CommandHandler("stats_day", stats_day))
+    application.add_handler(CommandHandler("stats_hour", stats_hour))
+    application.add_handler(CommandHandler("free_tokens", claim_tokens_command))
+    application.add_handler(CommandHandler("cookie", cookie_command))
 
-    # Регистрация обработчика выбора игры через кнопки
-    application.add_handler(CallbackQueryHandler(game_choice))
+    # Сначала регистрируем обработчик для cookie
+    application.add_handler(CallbackQueryHandler(cookie_button, pattern="^cookie_"))
+    # Затем регистрируем обработчик для остальных игр с уточненным паттерном
+    application.add_handler(CallbackQueryHandler(game_choice, pattern="^(dart|dice|basketball|football|slot|bowling)$"))
 
     # Логирование всех обновлений
     async def log_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):

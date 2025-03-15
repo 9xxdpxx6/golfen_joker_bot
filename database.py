@@ -1,77 +1,144 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Подключение к базе данных
 conn = sqlite3.connect('stats.sqlite', check_same_thread=False)
 cursor = conn.cursor()
 
-# Создание таблицы players
 def init_db():
+    # Включаем поддержку внешних ключей
+    cursor.execute('PRAGMA foreign_keys = ON')
+    
+    # Создаем таблицы в правильном порядке
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS players (
-            user_id INTEGER,
-            chat_id INTEGER,
-            username TEXT,
-            total_points INTEGER DEFAULT 0,
-            month_points INTEGER DEFAULT 0,
-            week_points INTEGER DEFAULT 0,
-            day_points INTEGER DEFAULT 0,
-            last_updated DATE,
-            PRIMARY KEY (user_id, chat_id)  
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL,
+            tokens INTEGER DEFAULT 0
         )
     ''')
-    conn.commit()
 
-# Получение данных игрока
-def get_player(user_id, chat_id):
-    cursor.execute('SELECT * FROM players WHERE user_id = ? AND chat_id = ?', (user_id, chat_id))
-    return cursor.fetchone()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chats (
+            chat_id INTEGER PRIMARY KEY,
+            chat_name TEXT
+        )
+    ''')
 
-# Добавление или обновление данных игрока
-def update_player(user_id, username, points, chat_id):
-    today = datetime.now().date()
-    player = get_player(user_id, chat_id)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS games (
+            game_id TEXT PRIMARY KEY,
+            game_name TEXT NOT NULL
+        )
+    ''')
 
-    if player:
-        # Обновляем данные игрока
-        cursor.execute('''
-            UPDATE players
-            SET 
-                total_points = total_points + ?,
-                month_points = month_points + ?,
-                week_points = week_points + ?,
-                day_points = day_points + ?,
-                last_updated = ?
-            WHERE user_id = ? AND chat_id = ?
-        ''', (points, points, points, points, today, user_id, chat_id))
-    else:
-        # Добавляем нового игрока
-        cursor.execute('''
-            INSERT INTO players (user_id, chat_id, username, total_points, month_points, week_points, day_points, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, chat_id, username, points, points, points, points, today))
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS game_history (
+            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            chat_id INTEGER,
+            game_id TEXT,
+            points INTEGER,
+            played_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (chat_id) REFERENCES chats(chat_id),
+            FOREIGN KEY (game_id) REFERENCES games(game_id)
+        )
+    ''')
+
+    # Проверяем, есть ли колонка tokens в таблице users
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [column[1] for column in cursor.fetchall()]
     
+    if 'tokens' not in columns:
+        cursor.execute('ALTER TABLE users ADD COLUMN tokens INTEGER DEFAULT 0')
+
+    # Заполняем справочник игр, игнорируя дубликаты
+    games = [
+        ('dart', 'Дартс'),
+        ('dice', 'Кубики'),
+        ('basketball', 'Баскетбол'),
+        ('football', 'Футбол'),
+        ('slot', 'Слоты'),
+        ('bowling', 'Боулинг')
+    ]
+    cursor.executemany('''
+        INSERT OR IGNORE INTO games (game_id, game_name) 
+        VALUES (?, ?)
+    ''', games)
     conn.commit()
 
-# Сброс статистики за день/неделю/месяц
-def reset_stats(period, chat_id):
-    today = datetime.now().date()
-    if period == 'day':
-        cursor.execute('UPDATE players SET day_points = 0, last_updated = ? WHERE chat_id = ?', (today, chat_id))
-    elif period == 'week':
-        cursor.execute('UPDATE players SET week_points = 0, last_updated = ? WHERE chat_id = ?', (today, chat_id))
-    elif period == 'month':
-        cursor.execute('UPDATE players SET month_points = 0, last_updated = ? WHERE chat_id = ?', (today, chat_id))
+def ensure_user_exists(user_id: int, username: str):
+    """Создает или обновляет пользователя"""
+    cursor.execute('''
+        INSERT INTO users (user_id, username) 
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET username = ?
+    ''', (user_id, username, username))
     conn.commit()
 
-# Получение статистики
-def get_stats(period, chat_id):
-    if period == 'all':
-        cursor.execute('SELECT username, total_points FROM players WHERE chat_id = ? ORDER BY total_points DESC', (chat_id,))
-    elif period == 'month':
-        cursor.execute('SELECT username, month_points FROM players WHERE chat_id = ? ORDER BY month_points DESC', (chat_id,))
-    elif period == 'week':
-        cursor.execute('SELECT username, week_points FROM players WHERE chat_id = ? ORDER BY week_points DESC', (chat_id,))
-    elif period == 'day':
-        cursor.execute('SELECT username, day_points FROM players WHERE chat_id = ? ORDER BY day_points DESC', (chat_id,))
+def ensure_chat_exists(chat_id: int):
+    """Создает чат если не существует"""
+    cursor.execute('''
+        INSERT OR IGNORE INTO chats (chat_id) 
+        VALUES (?)
+    ''', (chat_id,))
+    conn.commit()
+
+def add_game_record(user_id: int, username: str, chat_id: int, game_id: str, points: int):
+    """Добавляет запись об игре"""
+    ensure_user_exists(user_id, username)
+    ensure_chat_exists(chat_id)
+    
+    cursor.execute('''
+        INSERT INTO game_history (user_id, chat_id, game_id, points)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, chat_id, game_id, points))
+    conn.commit()
+
+def get_stats(period: str, chat_id: int):
+    """Получает статистику за период"""
+    time_filters = {
+        'hour': "AND played_at >= datetime('now', '-1 hour')",
+        'day': "AND played_at >= datetime('now', '-1 day')",
+        'week': "AND played_at >= datetime('now', '-7 days')",
+        'month': "AND played_at >= datetime('now', '-30 days')",
+        'all': ""
+    }
+    
+    time_filter = time_filters.get(period, "")
+    
+    query = f'''
+        SELECT 
+            u.username,
+            u.tokens as total_points
+        FROM users u
+        WHERE EXISTS (
+            SELECT 1 FROM game_history h 
+            WHERE h.user_id = u.user_id 
+            AND h.chat_id = ?
+            {time_filter}
+        )
+        AND u.tokens > 0
+        ORDER BY u.tokens DESC
+    '''
+    
+    cursor.execute(query, (chat_id,))
     return cursor.fetchall()
+
+def update_player(user_id: int, username: str, points: int, chat_id: int, game_id: str = None):
+    """Обновляет статистику игрока"""
+    if points > 0:  # Записываем только выигрыши
+        add_game_record(user_id, username, chat_id, game_id, points)
+        update_user_tokens(user_id, points)  # Добавляем выигрыш к токенам
+
+def get_user_tokens(user_id: int) -> int:
+    """Получает количество токенов пользователя"""
+    cursor.execute('SELECT tokens FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    return result[0] if result else 0
+
+def update_user_tokens(user_id: int, amount: int):
+    """Обновляет количество токенов пользователя"""
+    cursor.execute('UPDATE users SET tokens = tokens + ? WHERE user_id = ?', (amount, user_id))
+    conn.commit()
